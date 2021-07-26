@@ -26,10 +26,9 @@ def test(cfg,
 
         # Initialize model
         model = Darknet(cfg, img_size).to(device)
-        #print(model)
         # Load weights
-        #本身有，被我去掉了
         attempt_download(weights)
+        print(weights)
         if weights.endswith('.pt'):  # pytorch format
             print('.pth is reading')
             model.load_state_dict(torch.load(weights, map_location=device)['model'])
@@ -100,46 +99,6 @@ def test(cfg,
                     stats.append(([], torch.Tensor(), torch.Tensor(), tcls))
                 continue
 
-            # Append to text file
-            # with open('test.txt', 'a') as file:
-            #    [file.write('%11.5g' * 7 % tuple(x) + '\n') for x in pred]
-
-            # WBF
-            # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
-            # print(pred)
-            box = pred[:, :4].clone()   # xyxy  box [[1, 0.37, 1, 0.50]]
-            scale_coords(imgs[si].shape[1:], box, shapes[si])  # to original shape
-            # Clip boxes to image bounds
-            clip_coords(box, (height, width))
-            box[:, [0, 2]] /= width
-            box[:, [1, 3]] /= height
-
-            score = pred[:, 4].clone()  # tensor [0.95019]
-            label = pred[:, 6].clone()  # tensor [0.]
-
-            # print(box) tensor([[0.84219, 0.08895, 1.00000, 0.31430]], device='cuda:0')
-            # Merge boxes for single model predictions
-            wbf_boxes, wbf_scores, wbf_labels = weighted_boxes_fusion([box.cpu().numpy().tolist()],
-                                                          [score.cpu().numpy().tolist()],
-                                                          [label.cpu().numpy().tolist()],
-                                                          weights=None, iou_thr=0.5, skip_box_thr=0)
-            # print(wbf_boxes)  [[    0.84219    0.088953           1      0.3143]]
-            wbf_boxes[:, [0, 2]] *= width
-            wbf_boxes[:, [1, 3]] *= height
-
-            # 会存在多个框合成一个
-            # class_pred[i].unsqueeze(1).float()
-            # print(torch.Tensor(wbf_boxes).shape)
-            # print(torch.Tensor([wbf_scores]).shape)
-            # print(torch.ones_like(torch.Tensor([wbf_scores])).shape)
-            # print(torch.Tensor([wbf_labels]).shape)
-            pred_wbf = torch.cat((torch.Tensor(wbf_boxes),
-                                  torch.Tensor([wbf_scores]).t(),
-                                  torch.ones_like(torch.Tensor([wbf_scores]).t()),
-                                  torch.Tensor([wbf_labels]).t()), 1).to(device)
-            # print(pred_wbf)
-            # print(pred_wbf.shape)
-
             # Append to pycocotools JSON dictionary
             if save_json:
                 # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
@@ -156,10 +115,10 @@ def test(cfg,
 
 
             # Clip boxes to image bounds
-            clip_coords(pred_wbf, (height, width))
+            clip_coords(pred, (height, width))
 
             # Assign all predictions as incorrect
-            correct = [0] * len(pred_wbf)
+            correct = [0] * len(pred)
             if nl:
                 detected = []
                 tcls_tensor = labels[:, 0]
@@ -170,7 +129,7 @@ def test(cfg,
                 tbox[:, [1, 3]] *= height
 
                 # Search for correct predictions
-                for i, (*pbox, pconf, pcls_conf, pcls) in enumerate(pred_wbf):
+                for i, (*pbox, pconf, pcls_conf, pcls) in enumerate(pred):
 
                     # Break if all targets already located in image
                     if len(detected) == nl:
@@ -190,7 +149,7 @@ def test(cfg,
                         detected.append(m[bi])
 
             # Append statistics (correct, conf, pcls, tcls)
-            stats.append((correct, pred_wbf[:, 4].cpu(), pred_wbf[:, 6].cpu(), tcls))
+            stats.append((correct, pred[:, 4].cpu(), pred[:, 6].cpu(), tcls))
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in list(zip(*stats))]  # to numpy
@@ -235,6 +194,7 @@ def test(cfg,
 
     # Return results
     maps = np.zeros(nc) + map
+
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
     return (mp, mr, map, mf1, *(loss / len(dataloader)).tolist()), maps

@@ -18,7 +18,7 @@ except:
 
 wdir = 'weights' + os.sep  # weights dir
 last = wdir + 'last.pt'
-best = wdir + 'best.pt'
+best = wdir + 'tiny-mbs-snn.pt'
 results_file = 'results.txt'
 
 # Hyperparameters (j-series, 50.5 mAP yolov3-320) evolved by @ktian08 https://github.com/ultralytics/yolov3/issues/310
@@ -128,29 +128,18 @@ def train():
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in [0.8, 0.9]], gamma=0.1)
     scheduler.last_epoch = start_epoch - 1
 
-    # # Plot lr schedule
-    # y = []
-    # for _ in range(epochs):
-    #     scheduler.step()
-    #     y.append(optimizer.param_groups[0]['lr'])
-    # plt.plot(y, label='LambdaLR')
-    # plt.xlabel('epoch')
-    # plt.ylabel('LR')
-    # plt.tight_layout()
-    # plt.savefig('LR.png', dpi=300)
-
     # Mixed precision training https://github.com/NVIDIA/apex
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
 
     # 分布式训练
-    # if torch.cuda.device_count() > 1:
-    #     dist.init_process_group(backend='nccl',  # 'distributed backend'
-    #                             init_method='tcp://127.0.0.1:9999',  # distributed training init method
-    #                             world_size=1,  # number of nodes for distributed training
-    #                             rank=0)  # distributed training node rank
-    #     model = torch.nn.parallel.DistributedDataParallel(model)
-    #     model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
+    if torch.cuda.device_count() > 1:
+        dist.init_process_group(backend='nccl',  # 'distributed backend'
+                                init_method='tcp://127.0.0.1:9999',  # distributed training init method
+                                world_size=1,  # number of nodes for distributed training
+                                rank=0)  # distributed training node rank
+        model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters = True)
+        model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
     # 获得要剪枝的层
 
@@ -211,6 +200,7 @@ def train():
     print('Starting %s for %g epochs...' % ('training', epochs))
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
+
         print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size'))
         # 稀疏化标志
         sr_flag = opt.sr
@@ -260,6 +250,7 @@ def train():
 
             # Compute loss
             loss, loss_items = compute_loss(pred, targets, model)
+
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results
@@ -276,7 +267,7 @@ def train():
 
             # 对要剪枝层的γ参数稀疏化
             if hasattr(model, 'module'):
-                print(prune_idx)
+                # print(prune_idx)
                 BNOptimizer.updateBN(sr_flag, model.module.module_list, opt.s, prune_idx)
             else:
                 BNOptimizer.updateBN(sr_flag, model.module_list, opt.s, prune_idx)
@@ -288,7 +279,7 @@ def train():
 
             # Print batch results
             mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-            mem = torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0  # (GB)
+            mem = torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0  # (GB)
             s = ('%10s' * 2 + '%10.3g' * 6) % (
                 '%g/%g' % (epoch, epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
             pbar.set_description(s)
@@ -304,13 +295,15 @@ def train():
         # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
         if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
             with torch.no_grad():
-                results, maps = test.test(cfg,
-                                          data,
+                # print(cfg,data, model)
+                results, maps = test.test(cfg=cfg,
+                                          data=data,
                                           batch_size=batch_size,
                                           img_size=opt.img_size,
                                           model=model,
-                                          conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
-                                          save_json=final_epoch and epoch > 0 and 'coco.data' in data)
+                                          conf_thres=0.00,
+                                          # conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
+                                          save_json=False)
 
         # Write epoch results
         with open(results_file, 'a') as f:
@@ -376,10 +369,10 @@ def train():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', type=int, default=60)  # 500200 batches at bs 16, 117263 images = 273 epochs
+    parser.add_argument('--epochs', type=int, default=100)  # 500200 batches at bs 16, 117263 images = 273 epochs
     # effective batch_size = batch_size * accumulate
     parser.add_argument('--batch-size', type=int, default=2)
-    parser.add_argument('--accumulate', type=int, default=1, help='batches to accumulate before optimizing')
+    parser.add_argument('--accumulate', type=int, default=2, help='batches to accumulate before optimizing')
     parser.add_argument('--cfg', type=str, default='cfg/yolov3-tiny-mobilenet-small.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/uavcut.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
@@ -409,9 +402,10 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
-    opt.sr = True
-    # device = torch_utils.select_device(opt.device, apex=mixed_precision)
-    device = torch.device('cuda:0')
+
+    device = torch_utils.select_device(opt.device, apex=mixed_precision)
+    print(device)
+    # device = torch.device('cuda:0')
 
     tb_writer = None
 

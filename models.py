@@ -67,10 +67,12 @@ def create_modules(module_defs, img_size, arc):
                 modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
             if mdef['activation'] == 'leaky':
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
-            if mdef['activation'] == 'relu6':
+            elif mdef['activation'] == 'relu6':
                 modules.add_module('ReLU6', nn.ReLU6())
-            if mdef['activation'] == 'h_swish':
+            elif mdef['activation'] == 'h_swish':
                 modules.add_module('h_swish', nn.Hardswish())
+            elif mdef['activation'] == 'relu':
+                modules.add_module('ReLU', nn.ReLU())
 
         elif mdef['type'] == 'maxpool':
             kernel_size = int(mdef['size'])
@@ -156,6 +158,8 @@ def create_modules(module_defs, img_size, arc):
                 modules.add_module('h_swish', nn.Hardswish(inplace=True))
             elif mdef['activation'] == 'swish':
                 modules.add_module('activation', Swish())
+            elif mdef['activation'] == 'relu':
+                modules.add_module('ReLU', nn.ReLU())
 
         elif mdef['type'] == 'se':
             if 'filters' in mdef:
